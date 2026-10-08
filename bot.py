@@ -1,9 +1,7 @@
 import os
 import json
-import asyncio
 import aiohttp
 import discord
-from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,7 +12,6 @@ CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
 
 JOOBLE_URL = f"https://jooble.org/api/{JOOBLE_API_KEY}"
 
-CHECK_INTERVAL_MINUTES = 360
 RESULTS_PER_PAGE = 50
 SEARCH_LOCATION = "Ontario, CA"
 SEARCH_RADIUS = "40"
@@ -66,7 +63,7 @@ def load_posted_jobs():
 
 def save_posted_jobs(posted_jobs):
     with open(POSTED_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(posted_jobs), f, indent=2)
+        json.dump(sorted(posted_jobs), f, indent=2)
 
 
 def normalize_city(location):
@@ -86,11 +83,7 @@ def is_new_grad(job):
 
     text = f"{title} {snippet} {company}"
 
-    for term in NEW_GRAD_TERMS:
-        if term in text:
-            return True
-
-    return False
+    return any(term in text for term in NEW_GRAD_TERMS)
 
 
 async def get_jobs():
@@ -108,8 +101,8 @@ async def get_jobs():
         "Accept": "application/json",
     }
 
-    async with aiohttp.ClientSession() as session:
-        try:
+    try:
+        async with aiohttp.ClientSession() as session:
             async with session.post(
                 JOOBLE_URL,
                 json=payload,
@@ -124,9 +117,9 @@ async def get_jobs():
 
                 data = await response.json()
 
-        except Exception as e:
-            print(f"Jooble API connection error: {e}")
-            return []
+    except Exception as e:
+        print(f"Jooble API connection error: {e}")
+        return []
 
     jobs = data.get("jobs", [])
 
@@ -189,7 +182,11 @@ def create_embed(job):
         )
 
     if snippet:
-        cleaned_snippet = snippet.replace("<b>", "").replace("</b>", "")
+        cleaned_snippet = (
+            snippet
+            .replace("<b>", "")
+            .replace("</b>", "")
+        )
 
         if len(cleaned_snippet) > 500:
             cleaned_snippet = cleaned_snippet[:500] + "..."
@@ -212,19 +209,8 @@ def create_embed(job):
     return embed
 
 
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
-
-posted_jobs = load_posted_jobs()
-
-
 async def run_job_check():
-    global posted_jobs
+    posted_jobs = load_posted_jobs()
 
     print("\nChecking Jooble for RN jobs...")
 
@@ -251,71 +237,47 @@ async def run_job_check():
 
     print(f"New jobs: {len(new_jobs)}")
 
-    channel = bot.get_channel(CHANNEL_ID)
-
-    if channel is None:
-        print("ERROR: Could not find Discord channel.")
+    if not new_jobs:
+        print("No new jobs to post.")
         return
 
-    if not posted_jobs:
+    intents = discord.Intents.default()
+
+    client = discord.Client(intents=intents)
+
+    try:
+        await client.login(DISCORD_TOKEN)
+
+        channel = await client.fetch_channel(CHANNEL_ID)
+
+        posted_count = 0
+
         for job, unique_id in new_jobs:
-            posted_jobs.add(unique_id)
+            try:
+                embed = create_embed(job)
+
+                await channel.send(embed=embed)
+
+                posted_jobs.add(unique_id)
+                posted_count += 1
+
+                print(
+                    f"Posted: {job.get('title')} | "
+                    f"{job.get('company')} | "
+                    f"{job.get('location')}"
+                )
+
+            except Exception as e:
+                print(f"Error posting job: {e}")
 
         save_posted_jobs(posted_jobs)
 
-        print(
-            "First Jooble run detected. "
-            "Current jobs recorded without posting."
-        )
+        print(f"Posted {posted_count} new jobs.")
 
-        return
-
-    posted_count = 0
-
-    for job, unique_id in new_jobs:
-        try:
-            embed = create_embed(job)
-
-            await channel.send(embed=embed)
-
-            posted_jobs.add(unique_id)
-            posted_count += 1
-
-            print(
-                f"Posted: {job.get('title')} | "
-                f"{job.get('company')} | "
-                f"{job.get('location')}"
-            )
-
-            await asyncio.sleep(1)
-
-        except Exception as e:
-            print(f"Error posting job: {e}")
-
-    save_posted_jobs(posted_jobs)
-
-    print(f"Posted {posted_count} new jobs.")
+    finally:
+        await client.close()
 
 
-@tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
-async def check_jobs():
-    await run_job_check()
-
-
-@check_jobs.before_loop
-async def before_check_jobs():
-    await bot.wait_until_ready()
-
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    print("Bot is online!")
-
-    await run_job_check()
-
-    if not check_jobs.is_running():
-        check_jobs.start()
-
-
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run_job_check())
