@@ -209,6 +209,24 @@ def create_embed(job):
     return embed
 
 
+def get_unique_id(job):
+    """
+    Use the job URL as the primary duplicate identifier.
+    Fall back to the Jooble job ID if no URL is available.
+    """
+
+    job_link = job.get("link")
+    job_id = job.get("id")
+
+    if job_link:
+        return f"jooble_link_{job_link.strip().lower()}"
+
+    if job_id:
+        return f"jooble_{job_id}"
+
+    return None
+
+
 async def run_job_check():
     posted_jobs = load_posted_jobs()
 
@@ -225,12 +243,10 @@ async def run_job_check():
     new_jobs = []
 
     for job in jobs:
-        job_id = job.get("id")
+        unique_id = get_unique_id(job)
 
-        if job_id is None:
+        if unique_id is None:
             continue
-
-        unique_id = f"jooble_{job_id}"
 
         if unique_id not in posted_jobs:
             new_jobs.append((job, unique_id))
@@ -280,4 +296,5 @@ async def run_job_check():
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(run_job_check())
